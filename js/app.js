@@ -8,7 +8,7 @@ import {
 import { loadState, saveState, importState, createDefaultState, uid } from './store.js';
 
 let state = loadState();
-const ui = { tab: 'today', date: todayKey(), week: weekStart(todayKey()), reportWeek: weekStart(todayKey()), settings: null };
+const ui = { tab: 'today', date: todayKey(), week: weekStart(todayKey()), reportWeek: weekStart(todayKey()) };
 let installEvent = null;
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -194,18 +194,51 @@ function rateSheet(taskId) {
   const d = ui.date;
   const task = state.tasks.find((t) => t.id === taskId);
   const c = state.completions[d]?.[taskId];
+  let rating = c?.rating || null;
   const sheet = openSheet(`
     <h2>${task.emoji} ${esc(task.name)}</h2>
-    <p class="muted">${fmtDate(d)} · 这次完成得怎么样？</p>
+    <p class="muted">${fmtDate(d)} · ① 选完成情况　② 填实际用时　③ 点保存</p>
     <div class="rate-grid">
-      ${Object.entries(RATINGS).map(([k, r]) => `<button class="rate-btn r-${k} ${c?.rating === k ? 'sel' : ''}" data-rate="${k}">
+      ${Object.entries(RATINGS).map(([k, r]) => `<button type="button" class="rate-btn r-${k} ${rating === k ? 'sel' : ''}" data-rate="${k}" aria-pressed="${rating === k}">
         <span>${r.icon}</span><b>${r.label}</b><small>${r.short}</small></button>`).join('')}
     </div>
-    <label class="field">实际用时（分钟）<input type="number" inputmode="numeric" min="0" max="600" id="rate-min" value="${esc(c?.minutes ?? task.minutes ?? '')}"></label>
+    <form id="rate-form">
+      <label class="field" for="rate-min">实际用时（分钟）${task.minutes ? `<small>计划 ${task.minutes} 分钟</small>` : ''}</label>
+      <div class="stepper">
+        <button type="button" class="btn" data-step="-5" aria-label="减 5 分钟">−5</button>
+        <input type="number" inputmode="numeric" min="0" max="600" step="1" id="rate-min" value="${esc(c?.minutes ?? task.minutes ?? '')}" placeholder="分钟">
+        <button type="button" class="btn" data-step="5" aria-label="加 5 分钟">+5</button>
+      </div>
+      <button type="submit" class="btn primary block big" id="rate-save" ${rating ? '' : 'disabled'}>${rating ? '💾 保存' : '先选择完成情况'}</button>
+    </form>
     <div class="row">
-      ${c ? '<button class="btn ghost" data-clear>清除打卡</button>' : ''}
-      <button class="btn" data-close>取消</button>
+      ${c ? '<button type="button" class="btn ghost danger" data-clear>清除打卡</button>' : ''}
+      <button type="button" class="btn" data-close>取消</button>
     </div>`);
+  const minInput = $('#rate-min', sheet);
+  const saveBtn = $('#rate-save', sheet);
+
+  const save = () => {
+    if (!rating) return toast('请先选择完成情况');
+    const raw = minInput.value.trim();
+    const minutes = raw === '' ? null : Math.max(0, Math.min(600, Math.round(Number(raw))));
+    if (raw !== '' && !Number.isFinite(minutes)) return toast('请输入正确的分钟数');
+    const before = isPerfectDay(state, d);
+    const wasStars = starsOf(c);
+    state.completions[d] ??= {};
+    state.completions[d][taskId] = { rating, minutes, at: Date.now() };
+    if (state.skips[d]) delete state.skips[d][taskId];
+    if (isPerfectDay(state, d) && !state.ticketDays[d]) state.ticketDays[d] = true;
+    closeSheet();
+    commit();
+    const stars = starsOf(state.completions[d][taskId]);
+    if (!before && isPerfectDay(state, d)) { confetti(); toast('🎉 今天全部完成！获得 1 张抽奖券'); }
+    else if (c && c.rating === rating) toast(`✅ 已保存：实际用时 ${minutes ?? '—'} 分钟`);
+    else if (stars === 1 && wasStars < 1) toast('⭐ 获得 1 颗星！');
+    else if (stars === 0.5) toast('🌗 半颗星也是努力的回响！');
+    else toast('✅ 已保存');
+  };
+
   sheet.addEventListener('click', (e) => {
     const b = e.target.closest('button');
     if (!b) return;
@@ -215,20 +248,24 @@ function rateSheet(taskId) {
       closeSheet();
       return commit();
     }
-    if (b.dataset.rate) {
-      const before = isPerfectDay(state, d);
-      state.completions[d] ??= {};
-      const minutes = $('#rate-min', sheet).value;
-      state.completions[d][taskId] = { rating: b.dataset.rate, minutes: minutes === '' ? null : Number(minutes), at: Date.now() };
-      if (state.skips[d]) delete state.skips[d][taskId];
-      closeSheet();
-      commit();
-      const stars = starsOf(state.completions[d][taskId]);
-      if (isPerfectDay(state, d) && !state.ticketDays[d]) { state.ticketDays[d] = true; saveState(state); }
-      if (!before && isPerfectDay(state, d)) { confetti(); toast('🎉 今天全部完成！获得 1 张抽奖券'); }
-      else if (stars === 1) toast('⭐ 获得 1 颗星！');
-      else if (stars === 0.5) toast('🌗 半颗星也是努力的回响！');
+    if (b.dataset.step) {
+      minInput.value = Math.max(0, Math.min(600, (Number(minInput.value) || 0) + Number(b.dataset.step)));
+      return;
     }
+    if (b.dataset.rate) {
+      rating = b.dataset.rate;
+      sheet.querySelectorAll('.rate-btn').forEach((x) => {
+        x.classList.toggle('sel', x === b);
+        x.setAttribute('aria-pressed', String(x === b));
+      });
+      saveBtn.disabled = false;
+      saveBtn.textContent = '💾 保存';
+    }
+  });
+  // 点保存按钮或在输入框里按回车都会保存
+  $('#rate-form', sheet).addEventListener('submit', (e) => {
+    e.preventDefault();
+    save();
   });
 }
 
@@ -474,14 +511,46 @@ function renderGrowth() {
 }
 
 // ---------- 家长设置 ----------
+// 每次打开家长设置都要输入密码（输入内容以圆点隐藏）
 function openSettings() {
-  const pin = state.settings.pin;
-  if (pin && ui.settings !== 'ok') {
-    const v = prompt('请输入家长密码');
-    if (v !== pin) { if (v !== null) toast('密码不对哦'); return; }
-    ui.settings = 'ok';
-  }
-  renderSettings();
+  if (!state.settings.pin) return renderSettings();
+  const sheet = openSheet(`
+    <div class="sheet-head"><h2>🔒 家长验证</h2><button type="button" class="icon-btn" data-close aria-label="关闭">✕</button></div>
+    <form id="pin-form" autocomplete="off">
+      <label class="field" for="pin-input">请输入家长密码</label>
+      <div class="pw-wrap">
+        <input id="pin-input" type="password" inputmode="numeric" autocomplete="off" maxlength="12" placeholder="••••">
+        <button type="button" class="pw-eye" data-toggle-pw="pin-input" aria-label="显示密码">👁️</button>
+      </div>
+      <p class="pin-error" id="pin-error" hidden>密码不对哦，再试一次</p>
+      <button type="submit" class="btn primary block big">进入设置</button>
+    </form>`);
+  const input = $('#pin-input', sheet);
+  setTimeout(() => input.focus(), 50);
+  sheet.addEventListener('click', (e) => {
+    if (e.target.closest('[data-close]')) return closeSheet();
+    const eye = e.target.closest('[data-toggle-pw]');
+    if (eye) togglePassword(sheet, eye);
+  });
+  $('#pin-form', sheet).addEventListener('submit', (e) => {
+    e.preventDefault();
+    if (input.value === state.settings.pin) return renderSettings();
+    input.value = '';
+    $('#pin-error', sheet).hidden = false;
+    input.classList.remove('shake');
+    void input.offsetWidth;
+    input.classList.add('shake');
+    input.focus();
+  });
+}
+
+function togglePassword(root, eye) {
+  const target = eye.dataset.togglePw;
+  const list = target === '__all' ? [...root.querySelectorAll('[data-pw]')] : [root.querySelector(`#${target}`)];
+  const show = list[0].type === 'password';
+  list.forEach((x) => { x.type = show ? 'text' : 'password'; });
+  eye.textContent = show ? '🙈' : '👁️';
+  eye.setAttribute('aria-label', show ? '隐藏密码' : '显示密码');
 }
 
 function renderSettings(section = 'tasks') {
@@ -524,7 +593,16 @@ function renderSettings(section = 'tasks') {
         <option value="mint" ${s.theme === 'mint' ? 'selected' : ''}>🌿 薄荷森林</option>
         <option value="ocean" ${s.theme === 'ocean' ? 'selected' : ''}>🌊 海洋</option>
         <option value="night" ${s.theme === 'night' ? 'selected' : ''}>🌌 星空（深色）</option></select></label>
-      <label class="field">家长密码（留空表示不设）<input data-set="pin" type="password" inputmode="numeric" value="${esc(s.pin)}" placeholder="防止孩子自己改规则"></label>
+      <fieldset class="box-field pin-box"><legend>🔒 家长密码 ${s.pin ? '<span class="ok-tag">已设置</span>' : '<span class="muted">未设置</span>'}</legend>
+        <small>设置后，每次打开家长设置都需要输入密码，防止孩子自己改规则。</small>
+        <div class="pw-wrap"><input data-pw="new" type="password" inputmode="numeric" autocomplete="new-password" maxlength="12" placeholder="${s.pin ? '输入新密码' : '设置密码（4–12 位）'}">
+          <button type="button" class="pw-eye" data-toggle-pw="__all" aria-label="显示密码">👁️</button></div>
+        <div class="pw-wrap"><input data-pw="confirm" type="password" inputmode="numeric" autocomplete="new-password" maxlength="12" placeholder="再输入一次确认"></div>
+        <div class="row">
+          ${s.pin ? '<button type="button" class="btn ghost danger" data-clear-pin>取消密码</button>' : ''}
+          <button type="button" class="btn primary" data-save-pin>保存密码</button>
+        </div>
+      </fieldset>
       <label class="field">节日皮肤预览（孩子端不显示切换按钮，到日子自动触发）<select data-set="holidayPreview">
         <option value="">自动</option>${Object.entries(HOLIDAYS).map(([k, h]) => `<option value="${k}" ${s.holidayPreview === k ? 'selected' : ''}>${h.deco} ${h.name}</option>`).join('')}</select></label>
       ${installEvent ? '<button class="btn primary block" data-install>📲 安装到桌面</button>' : '<p class="muted">📲 安装：Android/电脑 Chrome 在地址栏或菜单中选择「安装应用」；iPhone/iPad 用 Safari 点「分享」→「添加到主屏幕」。</p>'}`;
@@ -573,6 +651,20 @@ function bindSettings(sheet) {
       state.seasons = state.seasons.filter((x) => x.id !== ds.delSeason);
       commit(); return renderSettings('season');
     }
+    if (ds.togglePw) return togglePassword(sheet, b);
+    if (ds.savePin !== undefined) {
+      const pw = $('[data-pw="new"]', sheet).value.trim();
+      const pw2 = $('[data-pw="confirm"]', sheet).value.trim();
+      if (pw.length < 4) return toast('密码至少 4 位');
+      if (pw !== pw2) return toast('两次输入的密码不一致');
+      state.settings.pin = pw;
+      commit(); toast('🔒 家长密码已保存'); return renderSettings('basic');
+    }
+    if (ds.clearPin !== undefined) {
+      if (!confirm('确定取消家长密码吗？取消后任何人都能打开设置。')) return;
+      state.settings.pin = '';
+      commit(); toast('已取消家长密码'); return renderSettings('basic');
+    }
     if (ds.install !== undefined && installEvent) {
       installEvent.prompt();
       installEvent = null;
@@ -597,7 +689,6 @@ function bindSettings(sheet) {
     const el = e.target;
     if (el.dataset.set !== undefined) {
       state.settings[el.dataset.set] = el.value;
-      if (el.dataset.set === 'pin') ui.settings = 'ok';
       commit();
     } else if (el.dataset.weight) {
       state.tierWeights[el.dataset.weight] = Math.max(0, Number(el.value) || 0); commit();

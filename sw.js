@@ -1,5 +1,5 @@
 // Service Worker：离线缓存应用外壳。更新文件后记得修改 VERSION。
-const VERSION = 'v1';
+const VERSION = 'v2';
 const CACHE = `adventure-island-${VERSION}`;
 const ASSETS = [
   './',
