@@ -357,7 +357,8 @@ function renderRewards() {
   const t = today();
   const tickets = ticketBalance(state, t);
   const bal = starBalance(state);
-  const pending = state.vault.filter((v) => !v.redeemedAt).sort((a, b) => a.cost - b.cost);
+  const pending = state.vault.filter((v) => !v.redeemedAt && !v.discardedAt).sort((a, b) => a.cost - b.cost);
+  const discarded = state.vault.filter((v) => v.discardedAt && !v.redeemedAt).sort((a, b) => b.discardedAt - a.discardedAt);
   const redeemed = state.vault.filter((v) => v.redeemedAt).sort((a, b) => b.redeemedAt - a.redeemedAt);
   const tierColor = (k) => state.tierColors[k] || TIERS[k].color;
   const w = state.tierWeights;
@@ -380,6 +381,7 @@ function renderRewards() {
       <div class="col">
         <button class="btn small ${bal >= v.cost ? 'primary' : ''}" data-action="redeem" data-id="${v.id}" ${bal >= v.cost ? '' : 'disabled'}>兑换</button>
         ${state.prizes.some((p) => p.cost === v.cost && p.name !== v.name) ? `<button class="btn small ghost" data-action="swap" data-id="${v.id}">调换</button>` : ''}
+        <button class="btn small ghost discard" data-action="discard" data-id="${v.id}" aria-label="不要「${esc(v.name)}」了">🗑️ 不要了</button>
       </div>
     </div>`).join('') : '<div class="card muted">抽到的奖品会先放在这里，攒够星星就能兑换。</div>'}
     <h3 class="sec">🎁 盲盒里有什么</h3>
@@ -391,6 +393,10 @@ function renderRewards() {
           <div class="pills">${list.map((p) => `<span class="pill" style="--tc:${tierColor(k)}">${p.emoji} ${esc(p.name)} <small>⭐${p.cost}</small></span>`).join('')}</div></div>`;
       }).join('')}
     </div>
+    ${discarded.length ? `<details class="discarded"><summary>🗑️ 不要的奖品（${discarded.length}）</summary><div class="card">
+      ${discarded.slice(0, 30).map((v) => `<div class="redeemed">${v.emoji} ${esc(v.name)} <small>⭐${v.cost}</small>
+        <button class="btn small ghost" data-action="restore" data-id="${v.id}">找回</button></div>`).join('')}
+      <small>抽奖券不会退回；点「找回」可以放回奖品库。</small></div></details>` : ''}
     ${redeemed.length ? `<h3 class="sec">✅ 已兑换</h3><div class="card">${redeemed.slice(0, 20).map((v) => `<div class="redeemed">${v.emoji} ${esc(v.name)} <small>${fmtDate(toKey(new Date(v.redeemedAt)))} · ⭐${v.cost}</small></div>`).join('')}</div>` : ''}`;
 }
 
@@ -884,6 +890,21 @@ document.addEventListener('click', (e) => {
       break;
     }
     case 'swap': swapSheet(b.dataset.id); break;
+    case 'discard': {
+      const v = state.vault.find((x) => x.id === b.dataset.id);
+      if (!confirm(`不要「${v.name}」了吗？\n它会从奖品库移走，用掉的抽奖券不会退回。`)) return;
+      v.discardedAt = Date.now();
+      commit();
+      toast(`已移走 ${v.emoji} ${v.name}，可以在「不要的奖品」里找回`);
+      break;
+    }
+    case 'restore': {
+      const v = state.vault.find((x) => x.id === b.dataset.id);
+      delete v.discardedAt;
+      commit();
+      toast(`${v.emoji} ${v.name} 回到奖品库啦`);
+      break;
+    }
     case 'settings': openSettings(); break;
   }
 });

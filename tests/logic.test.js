@@ -155,3 +155,14 @@ test('抽奖券获得后，新增任务不会收回', () => {
   assert.equal(isPerfectDay(s, day(0)), false);
   assert.equal(ticketsEarned(s, day(6)), 1);
 });
+
+test('奖品库里"不要了"的奖品不退抽奖券、不扣星星', () => {
+  const s = makeState([calc]);
+  check(s, day(0), 'c');
+  check(s, day(1), 'c');
+  s.vault.push({ id: 'v1', cost: 10, redeemedAt: null });
+  assert.equal(ticketBalance(s, day(6)), 1);
+  s.vault[0].discardedAt = Date.now();
+  assert.equal(ticketBalance(s, day(6)), 1);
+  assert.equal(starBalance(s), 2);
+});
