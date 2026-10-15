@@ -47,29 +47,50 @@ export function starsOf(c) {
 function isSkipped(state, date, taskId) {
   return !!state.skips[date]?.[taskId];
 }
-function activeOn(task, date) {
-  return !task.createdAt || date >= task.createdAt;
+// ---------- 暂停 ----------
+// task.pauses = [{ from, to }]：从 from 当天起暂停，到 to 当天恢复（to 为 null 表示等家长手动恢复）
+export function pauseAt(task, date) {
+  return (task.pauses || []).find((p) => date >= p.from && (!p.to || date < p.to)) || null;
+}
+// 今天正在生效（或明天开始）的暂停；已经自动恢复的历史暂停不算
+export function openPause(task, today) {
+  return (task.pauses || []).find((p) => !p.to || p.to > today) || null;
+}
+export function activeOn(task, date) {
+  return (!task.createdAt || date >= task.createdAt) && !pauseAt(task, date);
 }
 
-// 某周内该任务在 date 之前（不含）完成的次数
-function doneInWeekBefore(state, task, date) {
-  let n = 0;
-  for (let d = weekStart(date); d < date; d = addDays(d, 1)) {
-    if (isDone(getCompletion(state, d, task.id))) n++;
-  }
-  return n;
+// ---------- 每周 N 次：按「连续可用段」计次 ----------
+// 新建或暂停会把一周切成几段，每段单独计次；不满一周的段按剩余可用天数折算目标（向上取整）
+function allowedIn(task, days) {
+  return days.filter((d) => task.days.includes(weekdayIndex(d)));
 }
-function doneInWeek(state, task, start) {
-  return weekDays(start).filter((d) => isDone(getCompletion(state, d, task.id))).length;
+function doneIn(state, task, days) {
+  return days.filter((d) => isDone(getCompletion(state, d, task.id))).length;
 }
-// date 之后（不含）本周还剩多少可安排的天
-function allowedDaysAfter(task, date) {
-  let n = 0;
-  const end = addDays(weekStart(date), 6);
-  for (let d = addDays(date, 1); d <= end; d = addDays(d, 1)) {
-    if (task.days.includes(weekdayIndex(d))) n++;
+export function weeklySegments(task, start) {
+  const days = weekDays(start);
+  const totalAllowed = allowedIn(task, days).length;
+  const segs = [];
+  let cur = null;
+  for (const d of days) {
+    if (activeOn(task, d)) {
+      if (!cur) segs.push((cur = { days: [], endedByPause: false }));
+      cur.days.push(d);
+    } else {
+      if (cur && pauseAt(task, d)) cur.endedByPause = true;
+      cur = null;
+    }
   }
-  return n;
+  for (const seg of segs) {
+    const n = allowedIn(task, seg.days).length;
+    const target = n >= totalAllowed ? task.target : Math.ceil((task.target * n) / totalAllowed);
+    seg.target = Math.min(n, target);
+  }
+  return segs;
+}
+function segmentOf(task, date) {
+  return weeklySegments(task, weekStart(date)).find((seg) => seg.days.includes(date));
 }
 
 /**
@@ -94,12 +115,12 @@ export function tasksForDate(state, date) {
       continue;
     }
     // weekly：滑动窗口，不翻旧账
-    const before = doneInWeekBefore(state, task, date);
-    const left = task.target - before;
+    const seg = segmentOf(task, date);
+    const left = seg.target - doneIn(state, task, seg.days.filter((d) => d < date));
     if (left <= 0 && !completion) continue; // 本周已达标：任务消失，提前放假
     const remaining = Math.max(0, left - (isDone(completion) ? 1 : 0));
     const skipped = isSkipped(state, date, task.id) && !completion;
-    const canSkip = !completion && allowedDaysAfter(task, date) >= left;
+    const canSkip = !completion && allowedIn(task, seg.days.filter((d) => d > date)).length >= left;
     out.push({ task, completion, status: skipped ? 'skipped' : 'required', remaining, canSkip: canSkip || skipped });
   }
   return out;
@@ -155,33 +176,35 @@ export function weekPlan(state, start, today) {
       continue;
     }
     // weekly：已完成的天如实显示；过去没做的不显示（不翻旧账）；剩余次数排到今天及以后的可用日
-    let left = task.target - doneInWeek(state, task, start);
-    for (const d of days) {
-      if (!activeOn(task, d)) continue;
-      const c = getCompletion(state, d, task.id);
-      if (c) {
-        plan[d].push({ task, kind: kindOf(c) });
-        continue;
+    for (const seg of weeklySegments(task, start)) {
+      let left = seg.target - doneIn(state, task, seg.days);
+      for (const d of seg.days) {
+        const c = getCompletion(state, d, task.id);
+        if (c) {
+          plan[d].push({ task, kind: kindOf(c) });
+          continue;
+        }
+        if (d < today || left <= 0 || !task.days.includes(weekdayIndex(d))) continue;
+        if (isSkipped(state, d, task.id)) {
+          plan[d].push({ task, kind: 'skipped' });
+          continue;
+        }
+        plan[d].push({ task, kind: 'planned' });
+        left--;
       }
-      if (d < today || left <= 0 || !task.days.includes(weekdayIndex(d))) continue;
-      if (isSkipped(state, d, task.id)) {
-        plan[d].push({ task, kind: 'skipped' });
-        continue;
-      }
-      plan[d].push({ task, kind: 'planned' });
-      left--;
     }
   }
   return plan;
 }
 
 // ---------- 周统计 ----------
-function requiredInWeek(task, start) {
+function requiredInWeek(state, task, start) {
   const days = weekDays(start).filter((d) => activeOn(task, d));
   if (task.type === 'once') return days.includes(task.date) ? 1 : 0;
-  const allowed = days.filter((d) => task.days.includes(weekdayIndex(d))).length;
-  if (task.type === 'fixed') return allowed;
-  return Math.min(task.target, allowed);
+  if (task.type === 'fixed') return allowedIn(task, days).length;
+  // 被暂停打断的段：做了几次就算几次，不追究没做完的部分
+  return weeklySegments(task, start).reduce(
+    (sum, seg) => sum + (seg.endedByPause ? Math.min(seg.target, doneIn(state, task, seg.days)) : seg.target), 0);
 }
 
 export function weekStats(state, start) {
@@ -191,7 +214,7 @@ export function weekStats(state, start) {
   const perTask = [];
   const perSubject = Object.fromEntries(Object.keys(SUBJECTS).map((k) => [k, { req: 0, done: 0 }]));
   for (const task of state.tasks) {
-    const r = requiredInWeek(task, start);
+    const r = requiredInWeek(state, task, start);
     let d = 0, tStars = 0, planned = 0, actual = 0;
     for (const day of days) {
       const c = getCompletion(state, day, task.id);

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   tasksForDate, isPerfectDay, bossState, weekPlan, weekStats, ticketsEarned, ticketBalance,
   starBalance, drawPrize, storyProgress, weekStart, addDays, weekdayIndex, titleFor, treeLeaves,
+  pauseAt, weeklySegments,
 } from '../js/logic.js';
 import { holidayFor } from '../js/data.js';
 
@@ -165,4 +166,64 @@ test('奖品库里"不要了"的奖品不退抽奖券、不扣星星', () => {
   s.vault[0].discardedAt = Date.now();
   assert.equal(ticketBalance(s, day(6)), 1);
   assert.equal(starBalance(s), 2);
+});
+
+test('暂停：暂停期间不显示、不影响完美日和完成率', () => {
+  const s = makeState([calc, { ...reading, pauses: [{ from: day(1), to: null }] }]);
+  check(s, day(1), 'c');
+  assert.deepEqual(tasksForDate(s, day(1)).map((x) => x.task.id), ['c']);
+  assert.equal(isPerfectDay(s, day(1)), true);
+  assert.equal(pauseAt(s.tasks[1], day(5)).from, day(1));
+  // 周一那段没做，被暂停打断：不算欠债
+  const st = weekStats(s, MON);
+  assert.equal(st.perTask.find((x) => x.task.id === 'r'), undefined);
+});
+
+test('暂停前做过的次数照常计入', () => {
+  const s = makeState([{ ...reading, pauses: [{ from: day(2), to: null }] }]);
+  check(s, day(0), 'r');
+  const st = weekStats(s, MON);
+  assert.equal(st.required, 1);
+  assert.equal(st.done, 1);
+  assert.equal(st.rate, 1);
+});
+
+test('自动恢复：周四恢复按剩余天数折算（4 次 → 3 次），且不计暂停前的次数', () => {
+  const s = makeState([{ ...reading, pauses: [{ from: addDays(MON, -3), to: day(3) }] }]);
+  assert.equal(tasksForDate(s, day(2)).length, 0); // 周三还在暂停
+  const thu = tasksForDate(s, day(3))[0];
+  assert.equal(thu.remaining, 3);
+  assert.equal(thu.canSkip, true); // 剩 4 天要 3 次，可以顺延一天
+  const plan = weekPlan(s, MON, day(3));
+  assert.equal([3, 4, 5, 6].filter((i) => plan[day(i)].length).length, 3);
+  assert.equal(weekStats(s, MON).required, 3);
+});
+
+test('周一恢复就是完整的新一周', () => {
+  const s = makeState([{ ...reading, pauses: [{ from: addDays(MON, -10), to: MON }] }]);
+  const segs = weeklySegments(s.tasks[0], MON);
+  assert.equal(segs.length, 1);
+  assert.equal(segs[0].target, 4);
+});
+
+test('同一周内暂停又恢复：两段分开计次', () => {
+  const s = makeState([{ ...reading, pauses: [{ from: day(2), to: day(4) }] }]);
+  check(s, day(0), 'r');
+  const segs = weeklySegments(s.tasks[0], MON);
+  assert.equal(segs.length, 2);
+  assert.equal(segs[0].endedByPause, true);
+  assert.equal(segs[1].target, 2); // 周五到周日 3 天：ceil(4×3/7) = 2
+});
+
+test('周中新建的每周任务也按剩余天数折算', () => {
+  const s = makeState([{ ...reading, createdAt: day(6) }]);
+  assert.equal(tasksForDate(s, day(6))[0].remaining, 1);
+});
+
+test('固定任务暂停后对应日子不出现', () => {
+  const s = makeState([{ ...calc, pauses: [{ from: day(0), to: day(2) }] }]);
+  const plan = weekPlan(s, MON, day(0));
+  assert.equal(plan[day(0)].length + plan[day(1)].length, 0);
+  assert.equal(plan[day(2)].length, 1);
+  assert.equal(weekStats(s, MON).required, 3);
 });

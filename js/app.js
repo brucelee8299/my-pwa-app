@@ -3,7 +3,7 @@ import {
   todayKey, toKey, addDays, weekStart, weekDays, weekdayIndex, parseKey,
   tasksForDate, isPerfectDay, isDone, starsOf, bossState, weekPlan, weekStats,
   treeLeaves, treeStage, totalStars, starBalance, ticketBalance, drawPrize,
-  storyProgress, currentSeason, titleFor, computeBadges, formatStars, CHAPTER_CLEAR_RATE,
+  storyProgress, currentSeason, titleFor, computeBadges, formatStars, CHAPTER_CLEAR_RATE, openPause,
 } from './logic.js';
 import { loadState, saveState, importState, createDefaultState, uid } from './store.js';
 
@@ -565,10 +565,21 @@ function renderSettings(section = 'tasks') {
   const tabs = { tasks: '📋 任务', prizes: '🎁 奖品', story: '📖 剧情', season: '🏅 赛季', basic: '⚙️ 通用', data: '💾 数据' };
   let body = '';
   if (section === 'tasks') {
+    const t0 = today();
+    const desc = (t) => `${SUBJECTS[t.subject].name} · ${typeName[t.type]}${t.type === 'weekly' ? ` ${t.target} 次` : ''}${t.type === 'once' ? ` ${t.date}` : ` · ${t.days.map((d) => WEEKDAY_NAMES[d].slice(1)).join('')}`} · ${t.minutes || 0} 分钟${t.boss ? ' · BOSS' : ''}`;
+    const active = state.tasks.filter((t) => !openPause(t, t0));
+    const paused = state.tasks.filter((t) => openPause(t, t0));
+    const pauseInfo = (p) => (p.from > t0 ? `${fmtDate(p.from)} 起暂停` : '暂停中')
+      + (p.to ? ` · ${fmtDate(p.to)}（${WEEKDAY_NAMES[weekdayIndex(p.to)]}）自动恢复` : ' · 需手动恢复');
     body = `<button class="btn primary block" data-edit-task="">＋ 新增任务</button>
-      ${state.tasks.map((t) => `<div class="set-row"><span class="emo">${t.emoji}</span><div class="info"><b>${esc(t.name)}</b>
-        <small>${SUBJECTS[t.subject].name} · ${typeName[t.type]}${t.type === 'weekly' ? ` ${t.target} 次` : ''}${t.type === 'once' ? ` ${t.date}` : ` · ${t.days.map((d) => WEEKDAY_NAMES[d].slice(1)).join('')}`} · ${t.minutes || 0} 分钟${t.boss ? ' · BOSS' : ''}</small></div>
-        <button class="btn small" data-edit-task="${t.id}">编辑</button></div>`).join('')}`;
+      ${active.map((t) => `<div class="set-row"><span class="emo">${t.emoji}</span><div class="info"><b>${esc(t.name)}</b>
+        <small>${desc(t)}</small></div>
+        <div class="set-btns"><button class="btn small ghost" data-pause-task="${t.id}">⏸️ 暂停</button><button class="btn small" data-edit-task="${t.id}">编辑</button></div></div>`).join('')}
+      ${paused.length ? `<h3 class="sec">⏸️ 已暂停（${paused.length}）</h3>
+        <p class="muted small-note">暂停的任务不显示、不计入完成率和抽奖券，以前的记录都保留。</p>
+        ${paused.map((t) => `<div class="set-row paused"><span class="emo">${t.emoji}</span><div class="info"><b>${esc(t.name)}</b>
+          <small class="pause-info">${pauseInfo(openPause(t, t0))}</small><small>${desc(t)}</small></div>
+          <div class="set-btns"><button class="btn small primary" data-resume-task="${t.id}">▶️ 恢复</button><button class="btn small ghost" data-pause-task="${t.id}">📅 改日期</button></div></div>`).join('')}` : ''}`;
   } else if (section === 'prizes') {
     body = `<div class="tier-set">${Object.entries(TIERS).map(([k, x]) => `<label>${x.name}概率权重 <input type="number" min="0" data-weight="${k}" value="${state.tierWeights[k]}"></label>
         <label>颜色 <input type="color" data-color="${k}" value="${state.tierColors[k] || x.color}"></label>`).join('')}</div>
@@ -633,6 +644,15 @@ function bindSettings(sheet) {
     if (ds.close !== undefined) return closeSheet();
     if (ds.sec) return renderSettings(ds.sec);
     if (ds.editTask !== undefined) return taskForm(ds.editTask);
+    if (ds.pauseTask) return pauseSheet(ds.pauseTask);
+    if (ds.resumeTask) {
+      const t = state.tasks.find((x) => x.id === ds.resumeTask);
+      const p = openPause(t, today());
+      // 还没开始的暂停直接取消；已经开始的从今天起恢复
+      if (p.from >= today()) t.pauses = t.pauses.filter((x) => x !== p);
+      else p.to = today();
+      commit(); toast(`▶️ 「${t.name}」已恢复，今天起重新开始`); return renderSettings('tasks');
+    }
     if (ds.editPrize !== undefined) return prizeForm(ds.editPrize);
     if (ds.saveCustom !== undefined) {
       const title = $('[data-custom-title]', sheet).value.trim();
@@ -715,6 +735,71 @@ function bindSettings(sheet) {
           state = next; commit(); closeSheet(); toast('导入成功');
         } catch (err) { toast('导入失败：' + err.message); }
       });
+    }
+  });
+}
+
+// 下一个周一（今天是周一则为下周一）
+function nextMonday(from, weeksLater = 0) {
+  return addDays(weekStart(from), 7 * (1 + weeksLater));
+}
+
+function pauseSheet(id) {
+  const t = state.tasks.find((x) => x.id === id);
+  const t0 = today();
+  const existing = openPause(t, t0);
+  // 今天已经打过卡的，从明天起暂停，今天的记录照常算
+  const from = existing?.from || (state.completions[t0]?.[t.id] ? addDays(t0, 1) : t0);
+  const minDate = addDays(from > t0 ? from : t0, 1);
+  const options = [
+    ['下周一', nextMonday(t0)],
+    ['两周后', nextMonday(t0, 1)],
+    ['一个月后', nextMonday(addDays(t0, 21))],
+  ].filter(([, d]) => d >= minDate);
+  let mode = existing && !existing.to ? 'manual' : 'auto';
+  let date = existing?.to || options[0]?.[1] || minDate;
+  const sheet = openSheet(`
+    <div class="sheet-head"><h2>⏸️ ${existing ? '修改暂停' : '暂停任务'}</h2><button type="button" class="icon-btn" data-back aria-label="返回">✕</button></div>
+    <p><b>${t.emoji} ${esc(t.name)}</b></p>
+    <p class="muted">${from > t0 ? '今天已经打过卡，从明天起暂停。' : '从今天起暂停。'}暂停期间不显示，也不计入完成率、抽奖券和 BOSS 战；以前的记录都会保留。</p>
+    <div class="seg mode">
+      <button type="button" data-mode="auto">📅 到日子自动恢复</button>
+      <button type="button" data-mode="manual">✋ 我来手动恢复</button>
+    </div>
+    <div class="auto-box">
+      <div class="pills">${options.map(([n, d]) => `<button type="button" class="pill" data-date="${d}">${n}<small> ${fmtDate(d)}</small></button>`).join('')}</div>
+      <label class="field">恢复日期<input type="date" id="resume-date" min="${minDate}" value="${date}"></label>
+      <p class="muted" id="resume-note"></p>
+    </div>
+    <button type="button" class="btn primary block big" data-confirm>确认${existing ? '修改' : '暂停'}</button>`);
+  const input = $('#resume-date', sheet);
+  const sync = () => {
+    sheet.querySelectorAll('[data-mode]').forEach((b) => b.classList.toggle('sel', b.dataset.mode === mode));
+    sheet.querySelectorAll('[data-date]').forEach((b) => b.classList.toggle('sel', b.dataset.date === date));
+    $('.auto-box', sheet).hidden = mode !== 'auto';
+    const note = $('#resume-note', sheet);
+    if (!date) { note.textContent = ''; return; }
+    const wd = weekdayIndex(date);
+    note.textContent = t.type !== 'weekly' ? `${fmtDate(date)}（${WEEKDAY_NAMES[wd]}）起照常出现。`
+      : wd === 0 ? `${fmtDate(date)} 是周一，恢复后就是完整的新一周：本周 ${t.target} 次。`
+        : `${fmtDate(date)}（${WEEKDAY_NAMES[wd]}）恢复，那一周按剩余天数折算次数，下一周起恢复每周 ${t.target} 次。`;
+  };
+  sync();
+  input.addEventListener('change', () => { date = input.value; sync(); });
+  sheet.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.dataset.back !== undefined) return renderSettings('tasks');
+    if (b.dataset.mode) { mode = b.dataset.mode; return sync(); }
+    if (b.dataset.date) { date = b.dataset.date; input.value = date; return sync(); }
+    if (b.dataset.confirm !== undefined) {
+      if (mode === 'auto' && (!date || date < minDate)) return toast(`恢复日期要在 ${fmtDate(minDate)} 或之后`);
+      const to = mode === 'auto' ? date : null;
+      if (existing) existing.to = to;
+      else (t.pauses ??= []).push({ from, to });
+      commit();
+      toast(to ? `⏸️ 已暂停，${fmtDate(to)} 自动恢复` : '⏸️ 已暂停，需要时点「恢复」');
+      renderSettings('tasks');
     }
   });
 }
