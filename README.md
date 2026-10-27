@@ -2,6 +2,8 @@
 
 灵感来自小花生的文章《一个月养出"自律娃"，手搓"亲妈牌"APP让老母亲终于喘口气了》。这是一个给小学生用的游戏化学习计划工具，可以**安装为 PWA**（手机桌面 / 电脑应用），离线也能用。数据只保存在本机浏览器里。
 
+> 🎹 同一仓库里还有一个独立应用 **[识谱小勇士](note-quest/)**：帮孩子每天 10 分钟记牢五线谱音符（谱上位置 · 钢琴键 · 唱名），带关卡、BOSS、小游戏和家长看板。部署后地址是 `https://<用户名>.github.io/my-pwa-app/note-quest/`，详见 [note-quest/README.md](note-quest/README.md)。
+
 ## 功能
 
 | 文章里的痛点 | 应用里的做法 |
@@ -48,4 +50,5 @@ js/logic.js           纯计算逻辑（滑动窗口、星星、BOSS、周报、
 js/data.js            内置数据（默认任务、书库、BOSS、奖品、节日）
 js/store.js           localStorage 存取与备份
 tests/                node:test 单元测试
+note-quest/           识谱小勇士（独立 PWA）
 ```
